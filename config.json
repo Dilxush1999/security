@@ -1,0 +1,23 @@
+{
+    "ADMIN_IDS": [
+        1223308504
+    ],
+    "delete_settings": {
+        "text": "keep",
+        "audio": "keep",
+        "photo": "delete",
+        "video": "delete",
+        "sticker": "delete",
+        "voice": "delete",
+        "document": "delete",
+        "link": "delete",
+        "poll": "delete",
+        "file": "keep"
+    },
+    "welcome_settings": {
+        "enabled": true,
+        "message": "Salom",
+        "mute_enabled": true,
+        "mute_duration": 30
+    }
+}
