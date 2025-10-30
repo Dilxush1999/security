@@ -1,4 +1,5 @@
 import asyncio
+from aiohttp import web
 import os
 import json
 import io
@@ -31,6 +32,20 @@ class WelcomeStates(StatesGroup):
 class GroupSelectionStates(StatesGroup):
     waiting_for_group_id = State()
 
+async def handle(request):
+    # Render portni tekshirish uchun oddiy javob
+    return web.Response(text="✅ Telegram bot Render.com da ishlayapti!")
+
+async def start_bot():
+    # Botni ishga tushirishdan oldin konfiguratsiyalarni yuklash
+    load_config()
+    check_and_create_files()
+    print("🤖 Telegram bot ishga tushmoqda...")
+    try:
+        await dp.start_polling(bot)
+    except Exception as e:
+        print(f"Botni ishga tushirishda xatolik: {e}")
+        
 def load_config():
     global ADMIN_IDS, welcome_settings
     default_welcome = {
@@ -1010,15 +1025,24 @@ async def edit_mute_duration(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer()
 
 async def main():
-    load_config()
-    await bot.delete_webhook(drop_pending_updates=True)
-    await dp.start_polling(bot)
+    # Telegram botni alohida vazifa (task) sifatida ishga tushiramiz
+    asyncio.create_task(start_bot())
+
+    # Render serveri uchun minimal web-server ochamiz
+    app = web.Application()
+    app.router.add_get("/", handle)
+
+    port = int(os.environ.get("PORT", 8080))
+    print(f"🌐 Render web server {port}-portda ishga tushdi.")
+
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+
+    # Serverni doimiy ushlab turish uchun cheksiz sikl
+    while True:
+        await asyncio.sleep(3600)
 
 if __name__ == "__main__":
-    check_and_create_files()  # Fayllarni tekshirish va yaratish
-    try:
-        asyncio.run(main())
-    except Exception as e:
-        print(f"Bot ishga tushirishda xatolik: {str(e)}")
-    finally:
-        conn.close()
+    asyncio.run(main())
