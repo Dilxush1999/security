@@ -1,5 +1,5 @@
-import asyncio
 from aiohttp import web
+import asyncio
 import os
 import json
 import io
@@ -22,6 +22,7 @@ load_dotenv()
 API_TOKEN = os.getenv("BOT_TOKEN")
 
 ADMIN_IDS = []
+delete_settings = {}
 welcome_settings = {}
 joined_times = {}
 
@@ -29,25 +30,28 @@ class WelcomeStates(StatesGroup):
     waiting_for_message = State()
     waiting_for_duration = State()
 
-class GroupSelectionStates(StatesGroup):
-    waiting_for_group_id = State()
+class BannedStates(StatesGroup):
+    waiting_for_add_word = State()
+    waiting_for_del_word = State()
+    waiting_for_add_audio = State()
+    waiting_for_del_audio = State()
+    waiting_for_add_file = State()
+    waiting_for_del_file = State()
 
-async def handle(request):
-    # Render portni tekshirish uchun oddiy javob
-    return web.Response(text="✅ Telegram bot Render.com da ishlayapti!")
-
-async def start_bot():
-    # Botni ishga tushirishdan oldin konfiguratsiyalarni yuklash
-    load_config()
-    check_and_create_files()
-    print("🤖 Telegram bot ishga tushmoqda...")
-    try:
-        await dp.start_polling(bot)
-    except Exception as e:
-        print(f"Botni ishga tushirishda xatolik: {e}")
-        
 def load_config():
-    global ADMIN_IDS, welcome_settings
+    global ADMIN_IDS, delete_settings, welcome_settings
+    default_delete = {
+        "text": "allow",
+        "audio": "allow",
+        "photo": "allow",
+        "video": "allow",
+        "sticker": "allow",
+        "voice": "allow",
+        "document": "allow",
+        "link": "allow",
+        "poll": "allow",
+        "file": "allow"
+    }
     default_welcome = {
         "enabled": True,
         "message": "Xush kelibsiz! Guruh qoidalarini o'qing va hurmat bilan muloqot qiling.",
@@ -58,16 +62,20 @@ def load_config():
         with open('config.json', 'r', encoding='utf-8') as f:
             data = json.load(f)
         ADMIN_IDS = data.get("ADMIN_IDS", [1223308504])
+        loaded_delete = data.get("delete_settings", {})
+        delete_settings = {**default_delete, **loaded_delete}
         loaded_welcome = data.get("welcome_settings", {})
         welcome_settings = {**default_welcome, **loaded_welcome}
     else:
         ADMIN_IDS = [1223308504]
+        delete_settings = default_delete
         welcome_settings = default_welcome
         save_config()
 
 def save_config():
     data = {
         "ADMIN_IDS": ADMIN_IDS,
+        "delete_settings": delete_settings,
         "welcome_settings": welcome_settings
     }
     with open('config.json', 'w', encoding='utf-8') as f:
@@ -98,19 +106,14 @@ def check_and_create_files():
     for file in files:
         if not os.path.exists(file):
             create_empty_excel(file)
-    os.makedirs("groups", exist_ok=True)
 
 def add_group(conn, name, chat_id):
     cursor = conn.cursor()
     try:
         cursor.execute("INSERT INTO groups (name, chat_id) VALUES (?, ?)", (name, chat_id))
         conn.commit()
-        # Default settings yaratish
-        get_group_settings(chat_id)
         return cursor.lastrowid
     except sqlite3.IntegrityError:
-        # Agar allaqachon mavjud bo'lsa, default settings tekshirish
-        get_group_settings(chat_id)
         return None
 
 def get_group_by_id(conn, gid):
@@ -127,45 +130,6 @@ def get_all_groups(conn):
     cursor = conn.cursor()
     cursor.execute("SELECT * FROM groups")
     return cursor.fetchall()
-
-def get_group_settings(chat_id):
-    file_path = f"groups/{chat_id}.json"
-    default_settings = {
-        "text": True,
-        "photo": True,
-        "video": True,
-        "sticker": True,
-        "voice": True,
-        "audio": True,
-        "document": True,
-        "link": True,
-        "poll": True,
-        "file": True
-    }
-    if os.path.exists(file_path):
-        with open(file_path, 'r', encoding='utf-8') as f:
-            settings = json.load(f)
-            # Default bilan merge
-            for key, value in default_settings.items():
-                if key not in settings:
-                    settings[key] = value
-            return settings
-    else:
-        save_group_settings(chat_id, default_settings)
-        return default_settings
-
-def save_group_settings(chat_id, settings):
-    file_path = f"groups/{chat_id}.json"
-    with open(file_path, 'w', encoding='utf-8') as f:
-        json.dump(settings, f, indent=4, ensure_ascii=False)
-
-def update_all_groups(key, value):
-    groups = get_all_groups(conn)
-    for group in groups:
-        chat_id = group[2]
-        settings = get_group_settings(chat_id)
-        settings[key] = value
-        save_group_settings(chat_id, settings)
 
 def load_banned_words(file_path="taqiq.xlsx"):
     try:
@@ -196,6 +160,28 @@ def load_banned_file_names(file_path="all.xlsx"):
     except Exception as e:
         print(f"Taqiqlangan fayllar yuklashda xato: {e}")
         return []
+
+def update_banned_list(file_path, new_item=None, remove_item=None):
+    try:
+        if os.path.exists(file_path):
+            df = pd.read_excel(file_path, usecols=[0], header=None)
+        else:
+            df = pd.DataFrame(columns=[0])
+        if remove_item:
+            df = df[df[0] != remove_item]
+        if new_item:
+            new_row = pd.DataFrame({0: [new_item]})
+            df = pd.concat([df, new_row], ignore_index=True)
+        df.to_excel(file_path, index=False, header=False)
+        global BANNED_WORDS, BANNED_AUDIO_NAMES, BANNED_FILE_NAMES
+        if file_path == "taqiq.xlsx":
+            BANNED_WORDS = load_banned_words()
+        elif file_path == "taqiq_audio.xlsx":
+            BANNED_AUDIO_NAMES = load_banned_audio_names()
+        elif file_path == "all.xlsx":
+            BANNED_FILE_NAMES = load_banned_file_names()
+    except Exception as e:
+        print(f"Ro'yxatni yangilashda xato: {e}")
 
 BANNED_WORDS = load_banned_words()
 BANNED_AUDIO_NAMES = load_banned_audio_names()
@@ -266,7 +252,8 @@ async def send_welcome(message: types.Message):
                 [types.InlineKeyboardButton(text="Guruhlar soni", callback_data="group_count")],
                 [types.InlineKeyboardButton(text="Guruhlar ro'yxati", callback_data="groups_list_cb")],
                 [types.InlineKeyboardButton(text="Statistika", callback_data="stats_cb")],
-                [types.InlineKeyboardButton(text="Guruhdagi ta'qiqlar", callback_data="show_group_restrictions")],
+                [types.InlineKeyboardButton(text="Taqiqlar ro'yxati", callback_data="banned_lists")],
+                [types.InlineKeyboardButton(text="Taqiqlanganlarni o'chirish", callback_data="show_delete_settings")],
                 [types.InlineKeyboardButton(text="Welcome sozlamalari", callback_data="show_welcome_settings")]
             ])
             await message.reply("Admin panelga xush kelibsiz!", reply_markup=keyboard)
@@ -297,24 +284,6 @@ async def send_welcome(message: types.Message):
             except Exception as e:
                 await message.reply(f"Xatolik yuz berdi: {str(e)}")
                 print(f"/start da xato: {e}")
-
-@router.message(Command("admin"))
-async def admin_panel(message: types.Message):
-    if message.from_user.id not in ADMIN_IDS:
-        await message.reply("Faqat adminlar uchun!")
-        return
-    try:
-        keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
-            [types.InlineKeyboardButton(text="Guruhlar soni", callback_data="group_count")],
-            [types.InlineKeyboardButton(text="Guruhlar ro'yxati", callback_data="groups_list_cb")],
-            [types.InlineKeyboardButton(text="Statistika", callback_data="stats_cb")],
-            [types.InlineKeyboardButton(text="Guruhdagi ta'qiqlar", callback_data="show_group_restrictions")],
-            [types.InlineKeyboardButton(text="Welcome sozlamalari", callback_data="show_welcome_settings")]
-        ])
-        await message.reply("Admin panelga xush kelibsiz!", reply_markup=keyboard)
-    except Exception as e:
-        await message.reply(f"Admin panelni ochishda xatolik: {str(e)}")
-        print(f"Admin panel da xato: {e}")
 
 @router.message(Command("stats"))
 async def stats_command(message: types.Message):
@@ -351,14 +320,18 @@ async def stats_callback(callback: types.CallbackQuery):
     if callback.from_user.id not in ADMIN_IDS:
         await callback.answer("Faqat adminlar uchun!", show_alert=True)
         return
+    # stats_command ni takrorlash
     cursor = conn.cursor()
+    # Oxirgi 24 soat
     yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S")
     cursor.execute("SELECT COUNT(*) FROM logs WHERE timestamp > ?", (yesterday,))
     total_today = cursor.fetchone()[0]
 
+    # Turlarga ko'ra
     cursor.execute("SELECT type, COUNT(*) FROM logs WHERE timestamp > ? GROUP BY type", (yesterday,))
     type_stats = cursor.fetchall()
 
+    # Eng ko'p taqiqlangan item
     cursor.execute("SELECT banned_item, COUNT(*) FROM logs WHERE timestamp > ? GROUP BY banned_item ORDER BY COUNT(*) DESC LIMIT 5", (yesterday,))
     top_banned = cursor.fetchall()
 
@@ -428,6 +401,60 @@ async def show_welcome_settings_from_message(message: types.Message):
         reply_markup=keyboard
     )
 
+@router.message(BannedStates.waiting_for_add_word)
+async def add_word(message: types.Message, state: FSMContext):
+    if message.from_user.id not in ADMIN_IDS:
+        await state.clear()
+        return
+    update_banned_list("taqiq.xlsx", new_item=message.text.strip().lower())
+    await message.reply(f"Taqiqlangan so'z qo'shildi: {message.text}")
+    await state.clear()
+
+@router.message(BannedStates.waiting_for_del_word)
+async def del_word(message: types.Message, state: FSMContext):
+    if message.from_user.id not in ADMIN_IDS:
+        await state.clear()
+        return
+    update_banned_list("taqiq.xlsx", remove_item=message.text.strip().lower())
+    await message.reply(f"Taqiqlangan so'z o'chirildi: {message.text}")
+    await state.clear()
+
+@router.message(BannedStates.waiting_for_add_audio)
+async def add_audio(message: types.Message, state: FSMContext):
+    if message.from_user.id not in ADMIN_IDS:
+        await state.clear()
+        return
+    update_banned_list("taqiq_audio.xlsx", new_item=message.text.strip().lower())
+    await message.reply(f"Taqiqlangan audio nomi qo'shildi: {message.text}")
+    await state.clear()
+
+@router.message(BannedStates.waiting_for_del_audio)
+async def del_audio(message: types.Message, state: FSMContext):
+    if message.from_user.id not in ADMIN_IDS:
+        await state.clear()
+        return
+    update_banned_list("taqiq_audio.xlsx", remove_item=message.text.strip().lower())
+    await message.reply(f"Taqiqlangan audio nomi o'chirildi: {message.text}")
+    await state.clear()
+
+@router.message(BannedStates.waiting_for_add_file)
+async def add_file(message: types.Message, state: FSMContext):
+    if message.from_user.id not in ADMIN_IDS:
+        await state.clear()
+        return
+    update_banned_list("all.xlsx", new_item=message.text.strip().lower())
+    await message.reply(f"Taqiqlangan fayl nomi qo'shildi: {message.text}")
+    await state.clear()
+
+@router.message(BannedStates.waiting_for_del_file)
+async def del_file(message: types.Message, state: FSMContext):
+    if message.from_user.id not in ADMIN_IDS:
+        await state.clear()
+        return
+    update_banned_list("all.xlsx", remove_item=message.text.strip().lower())
+    await message.reply(f"Taqiqlangan fayl nomi o'chirildi: {message.text}")
+    await state.clear()
+
 @router.callback_query(F.data == "help")
 async def help_callback(callback: types.CallbackQuery):
     keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
@@ -467,7 +494,8 @@ async def back_callback(callback: types.CallbackQuery):
                 [types.InlineKeyboardButton(text="Guruhlar soni", callback_data="group_count")],
                 [types.InlineKeyboardButton(text="Guruhlar ro'yxati", callback_data="groups_list_cb")],
                 [types.InlineKeyboardButton(text="Statistika", callback_data="stats_cb")],
-                [types.InlineKeyboardButton(text="Guruhdagi ta'qiqlar", callback_data="show_group_restrictions")],
+                [types.InlineKeyboardButton(text="Taqiqlar ro'yxati", callback_data="banned_lists")],
+                [types.InlineKeyboardButton(text="Taqiqlanganlarni o'chirish", callback_data="show_delete_settings")],
                 [types.InlineKeyboardButton(text="Welcome sozlamalari", callback_data="show_welcome_settings")]
             ])
             await callback.message.edit_text(
@@ -523,8 +551,7 @@ async def check_messages(message: types.Message):
         tz = pytz.timezone("Asia/Tashkent")
         message_time = message.date.astimezone(tz).strftime("%Y-%m-%d %H:%M:%S %Z")
 
-        group_settings = get_group_settings(group_id)
-        action = "keep"  # Default
+        action = "allow"  # Default
         msg_type = "text"
 
         # Taqiqlangan so'zlar tekshiruvi (text uchun)
@@ -543,13 +570,12 @@ async def check_messages(message: types.Message):
                             await bot.forward_message(admin_id, message.chat.id, message.message_id)
                         except Exception as e:
                             print(f"Adminlarga xabar yuborishda xato: {e}")
-                    if not group_settings.get("text", True):
-                        action = "delete"
+                    action = delete_settings.get("text", "allow")
                     msg_type = "text"
                     break
 
             # Link tekshiruvi
-            if action == "keep" and any(entity.type == "url" for entity in (message.entities or [])):
+            if action == "allow" and any(entity.type == "url" for entity in (message.entities or [])):
                 log_banned_event(group_id, user_id, "link", "URL", message.text)
                 for admin_id in ADMIN_IDS:
                     try:
@@ -560,36 +586,27 @@ async def check_messages(message: types.Message):
                         await bot.forward_message(admin_id, message.chat.id, message.message_id)
                     except Exception as e:
                         print(f"Adminlarga link xabar yuborishda xato: {e}")
-                if not group_settings.get("link", True):
-                    action = "delete"
+                action = delete_settings.get("link", "allow")
                 msg_type = "link"
-            else:
-                if not group_settings.get("text", True):
-                    action = "delete"
 
         # Boshqa turlar
         elif message.photo:
-            if not group_settings.get("photo", True):
-                action = "delete"
+            action = delete_settings.get("photo", "allow")
             msg_type = "photo"
         elif message.video:
-            if not group_settings.get("video", True):
-                action = "delete"
+            action = delete_settings.get("video", "allow")
             msg_type = "video"
         elif message.sticker:
-            if not group_settings.get("sticker", True):
-                action = "delete"
+            action = delete_settings.get("sticker", "allow")
             msg_type = "sticker"
         elif message.voice:
-            if not group_settings.get("voice", True):
-                action = "delete"
+            action = delete_settings.get("voice", "allow")
             msg_type = "voice"
         elif message.audio:
-            if not group_settings.get("audio", True):
-                action = "delete"
+            action = delete_settings.get("audio", "allow")
             msg_type = "audio"
             # Audio nomini tekshirish (musiqa uchun)
-            if message.audio and message.audio.title:
+            if message.audio.title:
                 base_name = message.audio.title.lower().strip()
                 base_words = base_name.split()
                 for banned in BANNED_AUDIO_NAMES:
@@ -604,6 +621,7 @@ async def check_messages(message: types.Message):
                                 await bot.forward_message(admin_id, message.chat.id, message.message_id)
                             except Exception as e:
                                 print(f"Adminlarga audio yuborishda xato: {e}")
+                        action = delete_settings.get("audio", "allow")
                         break
         elif message.document:
             file_name = message.document.file_name or "Noma'lum fayl"
@@ -621,16 +639,13 @@ async def check_messages(message: types.Message):
                             await bot.forward_message(admin_id, message.chat.id, message.message_id)
                         except Exception as e:
                             print(f"Adminlarga fayl yuborishda xato: {e}")
-                    if not group_settings.get("document", True):
-                        action = "delete"
+                    action = delete_settings.get("document", "allow")
                     break
             else:
-                if not group_settings.get("file", True):
-                    action = "delete"
+                action = delete_settings.get("file", "allow")
             msg_type = "document"
         elif message.poll:
-            if not group_settings.get("poll", True):
-                action = "delete"
+            action = delete_settings.get("poll", "allow")
             msg_type = "poll"
         else:
             return  # Noma'lum tur
@@ -644,6 +659,15 @@ async def check_messages(message: types.Message):
                     await message.reply(f"{msg_type.capitalize()} yuborish taqiqlangan! Xabar o'chirildi.")
             except Exception as e:
                 print(f"{msg_type} o'chirishda xato: {e}")
+        elif action == "warn":
+            try:
+                # Xabarni o'chirmaymiz, lekin ogohlantirish yuboramiz
+                if is_after_join:
+                    await message.reply(f"{msg_type.capitalize()} yuborish taqiqlangan! Keyingi safar o'chiriladi. Iltimos, qoidalariga rioya qiling.")
+                print(f"{msg_type} uchun ogohlantirish berildi")
+            except Exception as e:
+                print(f"Ogohlantirish yuborishda xato: {e}")
+        # "allow" uchun hech narsa qilmaymiz
 
 @router.message(Command("update_lists"))
 async def update_lists(message: types.Message):
@@ -673,6 +697,25 @@ async def groups_list(message: types.Message):
         BufferedInputFile(csv_buffer.getvalue().encode('utf-8'), filename='guruhlar.csv'),
         caption=f"Jami {len(groups)} ta guruh ma'lumotlari fayl sifatida yuborildi."
     )
+
+@router.message(Command("admin"))
+async def admin_panel(message: types.Message):
+    if message.from_user.id not in ADMIN_IDS:
+        await message.reply("Faqat adminlar uchun!")
+        return
+    try:
+        keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
+            [types.InlineKeyboardButton(text="Guruhlar soni", callback_data="group_count")],
+            [types.InlineKeyboardButton(text="Guruhlar ro'yxati", callback_data="groups_list_cb")],
+            [types.InlineKeyboardButton(text="Statistika", callback_data="stats_cb")],
+            [types.InlineKeyboardButton(text="Taqiqlar ro'yxati", callback_data="banned_lists")],
+            [types.InlineKeyboardButton(text="Taqiqlanganlarni o'chirish", callback_data="show_delete_settings")],
+            [types.InlineKeyboardButton(text="Welcome sozlamalari", callback_data="show_welcome_settings")]
+        ])
+        await message.reply("Admin panelga xush kelibsiz!", reply_markup=keyboard)
+    except Exception as e:
+        await message.reply(f"Admin panelni ochishda xatolik: {str(e)}")
+        print(f"Admin panel da xato: {e}")
 
 @router.callback_query(F.data == "groups_list_cb")
 async def groups_list_cb(callback: types.CallbackQuery):
@@ -724,218 +767,386 @@ async def show_group_count(callback: types.CallbackQuery):
         await callback.answer(f"Guruhlar ro'yxatini olishda xatolik: {str(e)}", show_alert=True)
         print(f"Guruhlar callback da xato: {e}")
 
-# Guruh taqiqlari
-@router.callback_query(F.data == "show_group_restrictions")
-async def show_group_restrictions(callback: types.CallbackQuery):
+@router.callback_query(F.data == "banned_lists")
+async def banned_lists(callback: types.CallbackQuery):
     if callback.from_user.id not in ADMIN_IDS:
         await callback.answer("Faqat adminlar uchun!", show_alert=True)
         return
-    if callback.message.chat.type == "private":
+    keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
+        [types.InlineKeyboardButton(text="Taqiq so'zlar", callback_data="words_list")],
+        [types.InlineKeyboardButton(text="Taqiq audio", callback_data="audio_list")],
+        [types.InlineKeyboardButton(text="Taqiq fayllar", callback_data="files_list")],
+        [types.InlineKeyboardButton(text="Orqaga", callback_data="back_admin")]
+    ])
+    await callback.message.edit_text("Taqiqlar ro'yxatini tanlang:", reply_markup=keyboard)
+    await callback.answer()
+
+@router.callback_query(F.data == "words_list")
+async def words_list(callback: types.CallbackQuery):
+    if callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("Faqat adminlar uchun!", show_alert=True)
+        return
+    keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
+        [types.InlineKeyboardButton(text="Qo'shish", callback_data="add_word_cb")],
+        [types.InlineKeyboardButton(text="O'chirish", callback_data="del_word_cb")],
+        [types.InlineKeyboardButton(text="Orqaga", callback_data="banned_lists")]
+    ])
+    text = f"Mavjud taqiq so'zlar ({len(BANNED_WORDS)} ta):\n" + "\n".join(BANNED_WORDS[:20]) + ("\n..." if len(BANNED_WORDS) > 20 else "")
+    await callback.message.edit_text(text, reply_markup=keyboard)
+    await callback.answer()
+
+@router.callback_query(F.data == "add_word_cb")
+async def add_word_cb(callback: types.CallbackQuery, state: FSMContext):
+    if callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("Faqat adminlar uchun!", show_alert=True)
+        return
+    await callback.message.edit_text("Yangi taqiq so'zini yuboring:")
+    await state.set_state(BannedStates.waiting_for_add_word)
+    await callback.answer()
+
+@router.callback_query(F.data == "del_word_cb")
+async def del_word_cb(callback: types.CallbackQuery, state: FSMContext):
+    if callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("Faqat adminlar uchun!", show_alert=True)
+        return
+    await callback.message.edit_text("O'chirish uchun taqiq so'zini yuboring:")
+    await state.set_state(BannedStates.waiting_for_del_word)
+    await callback.answer()
+
+@router.callback_query(F.data == "audio_list")
+async def audio_list(callback: types.CallbackQuery):
+    if callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("Faqat adminlar uchun!", show_alert=True)
+        return
+    keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
+        [types.InlineKeyboardButton(text="Qo'shish", callback_data="add_audio_cb")],
+        [types.InlineKeyboardButton(text="O'chirish", callback_data="del_audio_cb")],
+        [types.InlineKeyboardButton(text="Orqaga", callback_data="banned_lists")]
+    ])
+    text = f"Mavjud taqiq audio ({len(BANNED_AUDIO_NAMES)} ta):\n" + "\n".join(BANNED_AUDIO_NAMES[:20]) + ("\n..." if len(BANNED_AUDIO_NAMES) > 20 else "")
+    await callback.message.edit_text(text, reply_markup=keyboard)
+    await callback.answer()
+
+@router.callback_query(F.data == "add_audio_cb")
+async def add_audio_cb(callback: types.CallbackQuery, state: FSMContext):
+    if callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("Faqat adminlar uchun!", show_alert=True)
+        return
+    await callback.message.edit_text("Yangi taqiq audio nomini yuboring:")
+    await state.set_state(BannedStates.waiting_for_add_audio)
+    await callback.answer()
+
+@router.callback_query(F.data == "del_audio_cb")
+async def del_audio_cb(callback: types.CallbackQuery, state: FSMContext):
+    if callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("Faqat adminlar uchun!", show_alert=True)
+        return
+    await callback.message.edit_text("O'chirish uchun taqiq audio nomini yuboring:")
+    await state.set_state(BannedStates.waiting_for_del_audio)
+    await callback.answer()
+
+@router.callback_query(F.data == "files_list")
+async def files_list(callback: types.CallbackQuery):
+    if callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("Faqat adminlar uchun!", show_alert=True)
+        return
+    keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
+        [types.InlineKeyboardButton(text="Qo'shish", callback_data="add_file_cb")],
+        [types.InlineKeyboardButton(text="O'chirish", callback_data="del_file_cb")],
+        [types.InlineKeyboardButton(text="Orqaga", callback_data="banned_lists")]
+    ])
+    text = f"Mavjud taqiq fayllar ({len(BANNED_FILE_NAMES)} ta):\n" + "\n".join(BANNED_FILE_NAMES[:20]) + ("\n..." if len(BANNED_FILE_NAMES) > 20 else "")
+    await callback.message.edit_text(text, reply_markup=keyboard)
+    await callback.answer()
+
+@router.callback_query(F.data == "add_file_cb")
+async def add_file_cb(callback: types.CallbackQuery, state: FSMContext):
+    if callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("Faqat adminlar uchun!", show_alert=True)
+        return
+    await callback.message.edit_text("Yangi taqiq fayl nomini yuboring:")
+    await state.set_state(BannedStates.waiting_for_add_file)
+    await callback.answer()
+
+@router.callback_query(F.data == "del_file_cb")
+async def del_file_cb(callback: types.CallbackQuery, state: FSMContext):
+    if callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("Faqat adminlar uchun!", show_alert=True)
+        return
+    await callback.message.edit_text("O'chirish uchun taqiq fayl nomini yuboring:")
+    await state.set_state(BannedStates.waiting_for_del_file)
+    await callback.answer()
+
+@router.callback_query(F.data == "show_delete_settings")
+async def show_delete_settings(callback: types.CallbackQuery):
+    if callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("Faqat adminlar uchun!", show_alert=True)
+        return
+    try:
+        status_text = "✅" if delete_settings.get("text", "allow") == "delete" else "❗" if delete_settings.get("text", "allow") == "warn" else "❌"
+        status_audio = "✅" if delete_settings.get("audio", "allow") == "delete" else "❗" if delete_settings.get("audio", "allow") == "warn" else "❌"
+        status_file = "✅" if delete_settings.get("file", "allow") == "delete" else "❗" if delete_settings.get("file", "allow") == "warn" else "❌"
         keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
-            [types.InlineKeyboardButton(text="Barcha guruhlar uchun", callback_data="all_groups_restrictions")],
-            [types.InlineKeyboardButton(text="Bitta guruh uchun", callback_data="select_single_group")],
+            [types.InlineKeyboardButton(text=f"Matn {status_text}", callback_data="text_settings")],
+            [types.InlineKeyboardButton(text=f"Audio {status_audio}", callback_data="audio_settings")],
+            [types.InlineKeyboardButton(text=f"Fayllar {status_file}", callback_data="file_settings")],
             [types.InlineKeyboardButton(text="Orqaga", callback_data="back_admin")]
         ])
         await callback.message.edit_text(
-            "Guruh taqiqlarini tanlang:",
+            f"Matn sozlamalari. Joriy holat: {status_text}",
             reply_markup=keyboard
         )
-    else:
-        chat_id = callback.message.chat.id
-        await show_restrictions_for_group(callback, chat_id)
-    await callback.answer()
+        await callback.answer()
+    except Exception as e:
+        await callback.answer(f"Xatolik: {str(e)}", show_alert=True)
+        print(f"Show delete settings da xato: {e}")
 
-@router.callback_query(F.data == "select_single_group")
-async def select_single_group(callback: types.CallbackQuery, state: FSMContext):
+# Qolgan delete settings callback'lari
+@router.callback_query(F.data == "text_settings")
+async def text_settings(callback: types.CallbackQuery):
     if callback.from_user.id not in ADMIN_IDS:
         await callback.answer("Faqat adminlar uchun!", show_alert=True)
-        return
-    await callback.message.edit_text("Guruh ID sini kiriting:")
-    await state.set_state(GroupSelectionStates.waiting_for_group_id)
-    await callback.answer()
-
-@router.message(GroupSelectionStates.waiting_for_group_id)
-async def process_group_id(message: types.Message, state: FSMContext):
-    if message.from_user.id not in ADMIN_IDS:
-        await message.reply("Faqat adminlar uchun!")
-        await state.clear()
         return
     try:
-        chat_id = int(message.text)
-        group = get_group_by_chat_id(conn, chat_id)
-        if not group:
-            await message.reply("Bunday guruh topilmadi!")
-            await state.clear()
-            return
-        await show_restrictions_for_group_from_pm(message, chat_id)
-        await state.clear()
-    except ValueError:
-        await message.reply("Iltimos, to'g'ri guruh ID kiriting!")
+        status_text = "✅" if delete_settings.get("text", "allow") == "delete" else "❗" if delete_settings.get("text", "allow") == "warn" else "❌"
+        keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
+            [types.InlineKeyboardButton(text="✅ O'chirish", callback_data="text_delete")],
+            [types.InlineKeyboardButton(text="❗ Ogohlantirish", callback_data="text_warn")],
+            [types.InlineKeyboardButton(text="❌ Saqlash", callback_data="text_keep")],
+            [types.InlineKeyboardButton(text="Orqaga", callback_data="show_delete_settings")]
+        ])
+        await callback.message.edit_text(
+            f"Matn sozlamalari. Joriy holat: {status_text}",
+            reply_markup=keyboard
+        )
+        await callback.answer()
     except Exception as e:
-        await message.reply(f"Xatolik: {e}")
-        print(f"Group ID process da xato: {e}")
+        await callback.answer(f"Xatolik: {str(e)}", show_alert=True)
+        print(f"Text settings da xato: {e}")
 
-async def show_restrictions_for_group_from_pm(message: types.Message, chat_id: int):
-    group = get_group_by_chat_id(conn, chat_id)
-    group_name = group[1] if group else f"Guruh {chat_id}"
-    settings = get_group_settings(chat_id)
-    text = f"{group_name} ({chat_id}) taqiq sozlamalari:"
-    keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
-        [types.InlineKeyboardButton(text="Xabar yuborish", callback_data=f"group_type_menu|text|{chat_id}")],
-        [types.InlineKeyboardButton(text="Rasm yuborish", callback_data=f"group_type_menu|photo|{chat_id}")],
-        [types.InlineKeyboardButton(text="Video yuborish", callback_data=f"group_type_menu|video|{chat_id}")],
-        [types.InlineKeyboardButton(text="Stiker yuborish", callback_data=f"group_type_menu|sticker|{chat_id}")],
-        [types.InlineKeyboardButton(text="Ovozli xabar yuborish", callback_data=f"group_type_menu|voice|{chat_id}")],
-        [types.InlineKeyboardButton(text="Musiqa yuborish", callback_data=f"group_type_menu|audio|{chat_id}")],
-        [types.InlineKeyboardButton(text="Fayl yuborish", callback_data=f"group_type_menu|document|{chat_id}")],
-        [types.InlineKeyboardButton(text="Link havola yuborish", callback_data=f"group_type_menu|link|{chat_id}")],
-        [types.InlineKeyboardButton(text="So'rovnoma yuborish", callback_data=f"group_type_menu|poll|{chat_id}")],
-        [types.InlineKeyboardButton(text="Orqaga", callback_data="show_group_restrictions")]
-    ])
-    await message.reply(text, reply_markup=keyboard)
-
-async def show_restrictions_for_group(callback: types.CallbackQuery, chat_id: int):
-    group_name = callback.message.chat.title or f"Guruh {chat_id}"
-    settings = get_group_settings(chat_id)
-    text = f"{group_name} taqiq sozlamalari:"
-    keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
-        [types.InlineKeyboardButton(text="Xabar yuborish", callback_data=f"group_type_menu|text|{chat_id}")],
-        [types.InlineKeyboardButton(text="Rasm yuborish", callback_data=f"group_type_menu|photo|{chat_id}")],
-        [types.InlineKeyboardButton(text="Video yuborish", callback_data=f"group_type_menu|video|{chat_id}")],
-        [types.InlineKeyboardButton(text="Stiker yuborish", callback_data=f"group_type_menu|sticker|{chat_id}")],
-        [types.InlineKeyboardButton(text="Ovozli xabar yuborish", callback_data=f"group_type_menu|voice|{chat_id}")],
-        [types.InlineKeyboardButton(text="Musiqa yuborish", callback_data=f"group_type_menu|audio|{chat_id}")],
-        [types.InlineKeyboardButton(text="Fayl yuborish", callback_data=f"group_type_menu|document|{chat_id}")],
-        [types.InlineKeyboardButton(text="Link havola yuborish", callback_data=f"group_type_menu|link|{chat_id}")],
-        [types.InlineKeyboardButton(text="So'rovnoma yuborish", callback_data=f"group_type_menu|poll|{chat_id}")],
-        [types.InlineKeyboardButton(text="Orqaga", callback_data="back_admin")]
-    ])
-    await callback.message.edit_text(text, reply_markup=keyboard)
-    await callback.answer()
-
-@router.callback_query(F.data.startswith("group_type_menu|"))
-async def group_type_menu(callback: types.CallbackQuery):
+@router.callback_query(F.data == "audio_settings")
+async def audio_settings(callback: types.CallbackQuery):
     if callback.from_user.id not in ADMIN_IDS:
         await callback.answer("Faqat adminlar uchun!", show_alert=True)
         return
-    parts = callback.data.split("|")
-    type_key = parts[1]
-    chat_id = int(parts[2])
-    settings = get_group_settings(chat_id)
-    current = settings.get(type_key, True)
-    status = "✅" if current else "❌"
-    type_names = {
-        "text": "Xabar yuborish",
-        "photo": "Rasm yuborish",
-        "video": "Video yuborish",
-        "sticker": "Stiker yuborish",
-        "voice": "Ovozli xabar yuborish",
-        "audio": "Musiqa yuborish",
-        "document": "Fayl yuborish",
-        "link": "Link havola yuborish",
-        "poll": "So'rovnoma yuborish"
-    }
-    text = f"{type_names.get(type_key, type_key)} sozlamalari. Joriy holat: {status}"
-    keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
-        [types.InlineKeyboardButton(text="Ruxsat berish (True)", callback_data=f"group_set_true|{type_key}|{chat_id}")],
-        [types.InlineKeyboardButton(text="Taqiqlash (False)", callback_data=f"group_set_false|{type_key}|{chat_id}")],
-        [types.InlineKeyboardButton(text="Orqaga", callback_data=f"show_group_restrictions|{chat_id if callback.message.chat.type != 'private' else '0'}")]
-    ])
-    await callback.message.edit_text(text, reply_markup=keyboard)
-    await callback.answer()
+    try:
+        status_audio = "✅" if delete_settings.get("audio", "allow") == "delete" else "❗" if delete_settings.get("audio", "allow") == "warn" else "❌"
+        keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
+            [types.InlineKeyboardButton(text="✅ O'chirish", callback_data="audio_delete")],
+            [types.InlineKeyboardButton(text="❗ Ogohlantirish", callback_data="audio_warn")],
+            [types.InlineKeyboardButton(text="❌ Saqlash", callback_data="audio_keep")],
+            [types.InlineKeyboardButton(text="Orqaga", callback_data="show_delete_settings")]
+        ])
+        await callback.message.edit_text(
+            f"Audio sozlamalari. Joriy holat: {status_audio}",
+            reply_markup=keyboard
+        )
+        await callback.answer()
+    except Exception as e:
+        await callback.answer(f"Xatolik: {str(e)}", show_alert=True)
+        print(f"Audio settings da xato: {e}")
 
-@router.callback_query(F.data.startswith("group_set_"))
-async def group_set_restriction(callback: types.CallbackQuery):
+@router.callback_query(F.data == "file_settings")
+async def file_settings(callback: types.CallbackQuery):
     if callback.from_user.id not in ADMIN_IDS:
         await callback.answer("Faqat adminlar uchun!", show_alert=True)
         return
-    parts = callback.data.split("|")
-    is_true = parts[1] == "true"
-    type_key = parts[2]
-    chat_id = int(parts[3])
-    settings = get_group_settings(chat_id)
-    settings[type_key] = is_true
-    save_group_settings(chat_id, settings)
-    status = "✅" if is_true else "❌"
-    text = f"{type_key} {status} qilindi."
-    keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
-        [types.InlineKeyboardButton(text="Orqaga", callback_data="show_group_restrictions")]
-    ])
-    await callback.message.edit_text(text, reply_markup=keyboard)
-    await callback.answer("Sozlama o'zgartirildi!")
+    try:
+        status_file = "✅" if delete_settings.get("file", "allow") == "delete" else "❗" if delete_settings.get("file", "allow") == "warn" else "❌"
+        keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
+            [types.InlineKeyboardButton(text="✅ O'chirish", callback_data="file_delete")],
+            [types.InlineKeyboardButton(text="❗ Ogohlantirish", callback_data="file_warn")],
+            [types.InlineKeyboardButton(text="❌ Saqlash", callback_data="file_keep")],
+            [types.InlineKeyboardButton(text="Orqaga", callback_data="show_delete_settings")]
+        ])
+        await callback.message.edit_text(
+            f"Fayllar sozlamalari. Joriy holat: {status_file}",
+            reply_markup=keyboard
+        )
+        await callback.answer()
+    except Exception as e:
+        await callback.answer(f"Xatolik: {str(e)}", show_alert=True)
+        print(f"File settings da xato: {e}")
 
-# Barcha guruhlar uchun
-@router.callback_query(F.data == "all_groups_restrictions")
-async def show_all_restrictions(callback: types.CallbackQuery):
+@router.callback_query(F.data == "text_delete")
+async def set_text_delete(callback: types.CallbackQuery):
     if callback.from_user.id not in ADMIN_IDS:
         await callback.answer("Faqat adminlar uchun!", show_alert=True)
         return
-    text = "Barcha guruhlar uchun taqiq sozlamalari (o'zgartirish barcha guruhlarga ta'sir qiladi):"
-    keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
-        [types.InlineKeyboardButton(text="Xabar yuborish", callback_data="all_type_menu|text")],
-        [types.InlineKeyboardButton(text="Rasm yuborish", callback_data="all_type_menu|photo")],
-        [types.InlineKeyboardButton(text="Video yuborish", callback_data="all_type_menu|video")],
-        [types.InlineKeyboardButton(text="Stiker yuborish", callback_data="all_type_menu|sticker")],
-        [types.InlineKeyboardButton(text="Ovozli xabar yuborish", callback_data="all_type_menu|voice")],
-        [types.InlineKeyboardButton(text="Musiqa yuborish", callback_data="all_type_menu|audio")],
-        [types.InlineKeyboardButton(text="Fayl yuborish", callback_data="all_type_menu|document")],
-        [types.InlineKeyboardButton(text="Link havola yuborish", callback_data="all_type_menu|link")],
-        [types.InlineKeyboardButton(text="So'rovnoma yuborish", callback_data="all_type_menu|poll")],
-        [types.InlineKeyboardButton(text="Orqaga", callback_data="back_admin")]
-    ])
-    await callback.message.edit_text(text, reply_markup=keyboard)
-    await callback.answer()
+    try:
+        delete_settings["text"] = "delete"
+        save_config()
+        keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
+            [types.InlineKeyboardButton(text="Orqaga", callback_data="show_delete_settings")]
+        ])
+        await callback.message.edit_text(
+            "Taqiqlangan matnlar endi o'chiriladi (✅).",
+            reply_markup=keyboard
+        )
+        await callback.answer("Sozlama o'zgartirildi!")
+    except Exception as e:
+        await callback.answer(f"Xatolik: {str(e)}", show_alert=True)
+        print(f"Text delete da xato: {e}")
 
-@router.callback_query(F.data.startswith("all_type_menu|"))
-async def all_type_menu(callback: types.CallbackQuery):
+@router.callback_query(F.data == "text_warn")
+async def set_text_warn(callback: types.CallbackQuery):
     if callback.from_user.id not in ADMIN_IDS:
         await callback.answer("Faqat adminlar uchun!", show_alert=True)
         return
-    parts = callback.data.split("|")
-    type_key = parts[1]
-    # Current ni hisoblash uchun birinchi guruhdan olish
-    groups = get_all_groups(conn)
-    current = True  # Default
-    if groups:
-        first_chat_id = groups[0][2]
-        current = get_group_settings(first_chat_id).get(type_key, True)
-    status = "✅" if current else "❌"
-    type_names = {
-        "text": "Xabar yuborish",
-        "photo": "Rasm yuborish",
-        "video": "Video yuborish",
-        "sticker": "Stiker yuborish",
-        "voice": "Ovozli xabar yuborish",
-        "audio": "Musiqa yuborish",
-        "document": "Fayl yuborish",
-        "link": "Link havola yuborish",
-        "poll": "So'rovnoma yuborish"
-    }
-    text = f"{type_names.get(type_key, type_key)} sozlamalari. Joriy holat (namuna): {status}"
-    keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
-        [types.InlineKeyboardButton(text="Ruxsat berish (True)", callback_data=f"all_set_true|{type_key}")],
-        [types.InlineKeyboardButton(text="Taqiqlash (False)", callback_data=f"all_set_false|{type_key}")],
-        [types.InlineKeyboardButton(text="Orqaga", callback_data="all_groups_restrictions")]
-    ])
-    await callback.message.edit_text(text, reply_markup=keyboard)
-    await callback.answer()
+    try:
+        delete_settings["text"] = "warn"
+        save_config()
+        keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
+            [types.InlineKeyboardButton(text="Orqaga", callback_data="show_delete_settings")]
+        ])
+        await callback.message.edit_text(
+            "Taqiqlangan matnlar ogohlantiriladi (❗).",
+            reply_markup=keyboard
+        )
+        await callback.answer("Sozlama o'zgartirildi!")
+    except Exception as e:
+        await callback.answer(f"Xatolik: {str(e)}", show_alert=True)
+        print(f"Text warn da xato: {e}")
 
-@router.callback_query(F.data.startswith("all_set_"))
-async def all_set_restriction(callback: types.CallbackQuery):
+@router.callback_query(F.data == "text_keep")
+async def set_text_keep(callback: types.CallbackQuery):
     if callback.from_user.id not in ADMIN_IDS:
         await callback.answer("Faqat adminlar uchun!", show_alert=True)
         return
-    parts = callback.data.split("|")
-    is_true = parts[1] == "true"
-    type_key = parts[2]
-    update_all_groups(type_key, is_true)
-    status = "✅" if is_true else "❌"
-    text = f"Barcha guruhlarda {type_key} {status} qilindi."
-    keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
-        [types.InlineKeyboardButton(text="Orqaga", callback_data="all_groups_restrictions")]
-    ])
-    await callback.message.edit_text(text, reply_markup=keyboard)
-    await callback.answer("Sozlama o'zgartirildi!")
+    try:
+        delete_settings["text"] = "allow"
+        save_config()
+        keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
+            [types.InlineKeyboardButton(text="Orqaga", callback_data="show_delete_settings")]
+        ])
+        await callback.message.edit_text(
+            "Taqiqlangan matnlar saqlanadi (❌).",
+            reply_markup=keyboard
+        )
+        await callback.answer("Sozlama o'zgartirildi!")
+    except Exception as e:
+        await callback.answer(f"Xatolik: {str(e)}", show_alert=True)
+        print(f"Text keep da xato: {e}")
+
+@router.callback_query(F.data == "audio_delete")
+async def set_audio_delete(callback: types.CallbackQuery):
+    if callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("Faqat adminlar uchun!", show_alert=True)
+        return
+    try:
+        delete_settings["audio"] = "delete"
+        save_config()
+        keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
+            [types.InlineKeyboardButton(text="Orqaga", callback_data="show_delete_settings")]
+        ])
+        await callback.message.edit_text(
+            "Taqiqlangan audiolar endi o'chiriladi (✅).",
+            reply_markup=keyboard
+        )
+        await callback.answer("Sozlama o'zgartirildi!")
+    except Exception as e:
+        await callback.answer(f"Xatolik: {str(e)}", show_alert=True)
+        print(f"Audio delete da xato: {e}")
+
+@router.callback_query(F.data == "audio_warn")
+async def set_audio_warn(callback: types.CallbackQuery):
+    if callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("Faqat adminlar uchun!", show_alert=True)
+        return
+    try:
+        delete_settings["audio"] = "warn"
+        save_config()
+        keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
+            [types.InlineKeyboardButton(text="Orqaga", callback_data="show_delete_settings")]
+        ])
+        await callback.message.edit_text(
+            "Taqiqlangan audiolar ogohlantiriladi (❗).",
+            reply_markup=keyboard
+        )
+        await callback.answer("Sozlama o'zgartirildi!")
+    except Exception as e:
+        await callback.answer(f"Xatolik: {str(e)}", show_alert=True)
+        print(f"Audio warn da xato: {e}")
+
+@router.callback_query(F.data == "audio_keep")
+async def set_audio_keep(callback: types.CallbackQuery):
+    if callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("Faqat adminlar uchun!", show_alert=True)
+        return
+    try:
+        delete_settings["audio"] = "allow"
+        save_config()
+        keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
+            [types.InlineKeyboardButton(text="Orqaga", callback_data="show_delete_settings")]
+        ])
+        await callback.message.edit_text(
+            "Taqiqlangan audiolar saqlanadi (❌).",
+            reply_markup=keyboard
+        )
+        await callback.answer("Sozlama o'zgartirildi!")
+    except Exception as e:
+        await callback.answer(f"Xatolik: {str(e)}", show_alert=True)
+        print(f"Audio keep da xato: {e}")
+
+@router.callback_query(F.data == "file_delete")
+async def set_file_delete(callback: types.CallbackQuery):
+    if callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("Faqat adminlar uchun!", show_alert=True)
+        return
+    try:
+        delete_settings["file"] = "delete"
+        save_config()
+        keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
+            [types.InlineKeyboardButton(text="Orqaga", callback_data="show_delete_settings")]
+        ])
+        await callback.message.edit_text(
+            "Taqiqlangan fayllar endi o'chiriladi (✅).",
+            reply_markup=keyboard
+        )
+        await callback.answer("Sozlama o'zgartirildi!")
+    except Exception as e:
+        await callback.answer(f"Xatolik: {str(e)}", show_alert=True)
+        print(f"File delete da xato: {e}")
+
+@router.callback_query(F.data == "file_warn")
+async def set_file_warn(callback: types.CallbackQuery):
+    if callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("Faqat adminlar uchun!", show_alert=True)
+        return
+    try:
+        delete_settings["file"] = "warn"
+        save_config()
+        keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
+            [types.InlineKeyboardButton(text="Orqaga", callback_data="show_delete_settings")]
+        ])
+        await callback.message.edit_text(
+            "Taqiqlangan fayllar ogohlantiriladi (❗).",
+            reply_markup=keyboard
+        )
+        await callback.answer("Sozlama o'zgartirildi!")
+    except Exception as e:
+        await callback.answer(f"Xatolik: {str(e)}", show_alert=True)
+        print(f"File warn da xato: {e}")
+
+@router.callback_query(F.data == "file_keep")
+async def set_file_keep(callback: types.CallbackQuery):
+    if callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("Faqat adminlar uchun!", show_alert=True)
+        return
+    try:
+        delete_settings["file"] = "allow"
+        save_config()
+        keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
+            [types.InlineKeyboardButton(text="Orqaga", callback_data="show_delete_settings")]
+        ])
+        await callback.message.edit_text(
+            "Taqiqlangan fayllar saqlanadi (❌).",
+            reply_markup=keyboard
+        )
+        await callback.answer("Sozlama o'zgartirildi!")
+    except Exception as e:
+        await callback.answer(f"Xatolik: {str(e)}", show_alert=True)
+        print(f"File keep da xato: {e}")
 
 @router.callback_query(F.data == "back_admin")
 async def back_admin_callback(callback: types.CallbackQuery):
@@ -947,7 +1158,8 @@ async def back_admin_callback(callback: types.CallbackQuery):
             [types.InlineKeyboardButton(text="Guruhlar soni", callback_data="group_count")],
             [types.InlineKeyboardButton(text="Guruhlar ro'yxati", callback_data="groups_list_cb")],
             [types.InlineKeyboardButton(text="Statistika", callback_data="stats_cb")],
-            [types.InlineKeyboardButton(text="Guruhdagi ta'qiqlar", callback_data="show_group_restrictions")],
+            [types.InlineKeyboardButton(text="Taqiqlar ro'yxati", callback_data="banned_lists")],
+            [types.InlineKeyboardButton(text="Taqiqlanganlarni o'chirish", callback_data="show_delete_settings")],
             [types.InlineKeyboardButton(text="Welcome sozlamalari", callback_data="show_welcome_settings")]
         ])
         await callback.message.edit_text(
@@ -959,7 +1171,7 @@ async def back_admin_callback(callback: types.CallbackQuery):
         await callback.answer(f"Xatolik: {str(e)}", show_alert=True)
         print(f"Back admin da xato: {e}")
 
-# Welcome sozlamalari
+# Welcome sozlamalari callback'lari
 @router.callback_query(F.data == "show_welcome_settings")
 async def show_welcome_settings(callback: types.CallbackQuery):
     if callback.from_user.id not in ADMIN_IDS:
@@ -1024,6 +1236,20 @@ async def edit_mute_duration(callback: types.CallbackQuery, state: FSMContext):
     await state.set_state(WelcomeStates.waiting_for_duration)
     await callback.answer()
 
+async def handle(request):
+    # Render portni tekshirish uchun oddiy javob
+    return web.Response(text="✅ Telegram bot Render.com da ishlayapti!")
+
+async def start_bot():
+    # Botni ishga tushirishdan oldin konfiguratsiyalarni yuklash
+    load_config()
+    check_and_create_files()
+    print("🤖 Telegram bot ishga tushmoqda...")
+    try:
+        await dp.start_polling(bot)
+    except Exception as e:
+        print(f"Botni ishga tushirishda xatolik: {e}")
+        
 async def main():
     # Telegram botni alohida vazifa (task) sifatida ishga tushiramiz
     asyncio.create_task(start_bot())
@@ -1045,4 +1271,10 @@ async def main():
         await asyncio.sleep(3600)
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    check_and_create_files()  # Fayllarni tekshirish va yaratish
+    try:
+        asyncio.run(main())
+    except Exception as e:
+        print(f"Bot ishga tushirishda xatolik: {str(e)}")
+    finally:
+        conn.close()
